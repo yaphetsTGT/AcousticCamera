@@ -18,9 +18,9 @@
 \usepackage{xcolor}
 \usepackage{fancyhdr}
 \usepackage{caption}
+\usepackage{float}
 \usepackage{tikz}
 \usetikzlibrary{positioning,arrows.meta,fit,calc,shapes.geometric}
-\usepackage{pgfgantt}
 \usepackage{csquotes}
 \usepackage[backend=biber,style=ieee,doi=true,url=true]{biblatex}
 \addbibresource{references.bib}
@@ -125,10 +125,11 @@ The starting point of the thesis consists of two groups of software:
 
 The task of the thesis is to implement \code{main.py}, which combines the lab
 modules into a working acoustic camera. A first draft shows the core problem:
-it re-creates the audio source for every frame, waits for five blocks of audio
-and evaluates the SRP map for all $41\times41$ grid points and all 120
-microphone pairs in nested Python loops. The result is far below an interactive
-frame rate.
+it re-creates the audio source for every video frame and waits until five new
+blocks of audio have been recorded before the heatmap can be computed. The
+result is far below an interactive frame rate. In addition, the program has to
+stay simple and understandable, so that it can serve as a clear entry point
+for further work in the lab.
 
 The thesis addresses the following research questions:
 
@@ -137,9 +138,8 @@ The thesis addresses the following research questions:
         \code{main.py} with few dependencies and a simple, understandable
         structure?
   \item[RQ2:] Which parts of the processing chain limit the frame rate, and
-        which measures (continuous streaming, vectorisation of the SRP
-        computation, choice of block size and grid) raise it to at least
-        \SI{5}{fps} and ideally \SIrange{20}{30}{fps}?
+        which measures -- in particular continuous audio capturing -- raise
+        it to at least \SI{5}{fps} and ideally \SIrange{20}{30}{fps}?
   \item[RQ3:] How does the new interface compare with the existing approaches
         in terms of frame rate, latency, localisation result and code
         complexity?
@@ -150,8 +150,8 @@ The thesis addresses the following research questions:
   \item Implementation of \code{main.py}: device and camera discovery,
         continuous multichannel streaming, integration of AGC, geometry and
         SRP, heatmap overlay on the video and optional WAV recording.
-  \item Performance optimisation of the processing chain; the lab modules may
-        be vectorised as long as their interface and results stay the same.
+  \item Analysis of the processing chain with respect to the frame rate and
+        improvement of the frame rate within \code{main.py}.
   \item Tests, frame-rate benchmarks, comparison with the existing approaches
         and user documentation.
 \end{itemize}
@@ -159,7 +159,8 @@ The thesis addresses the following research questions:
 \textbf{Out of scope:}
 \begin{itemize}
   \item Development of hardware, firmware or new device drivers.
-  \item Development of new localisation or beamforming algorithms.
+  \item Development of new localisation or beamforming algorithms; the lab
+        modules (e.g.\ \code{SRP.py}) are used as provided.
   \item Graphical user interfaces beyond a simple OpenCV window, and
         metrological camera calibration.
 \end{itemize}
@@ -167,11 +168,11 @@ The thesis addresses the following research questions:
 % =============================================================================
 \section{Objective Definition}
 % =============================================================================
-The thesis is considered successful when \code{main.py} runs the acoustic
-camera on the lab PC with the provided modules and fulfils the criteria in
-Table~\ref{tab:objectives}. Two levels are defined: the \emph{expected} result
-is the minimum the thesis must deliver, the \emph{successful} result is the
-target. The achievable frame rate follows from the time needed to collect
+The thesis pursues two goals: \textbf{(G1)} a significantly higher frame rate
+of the acoustic camera in \code{main.py}, and \textbf{(G2)} simple, clear and
+understandable code. For G1, two levels are defined: the \emph{expected}
+result is the minimum the thesis must deliver, the \emph{successful} result is
+the target. The achievable frame rate follows from the time needed to collect
 audio and to process it. If $K$ blocks of $N$ samples are recorded per frame at
 sampling frequency $f_s$ and the processing takes $T_P$, then
 \begin{equation}
@@ -181,29 +182,23 @@ sampling frequency $f_s$ and the processing takes $T_P$, then
 \end{equation}
 For the current draft ($K=5$, $N=1024$, $f_s=\SI{48}{\kilo\hertz}$) the waiting
 time alone is \SI{106.7}{\milli\second}, which limits the frame rate to at most
-\SI{9.4}{fps} even with infinitely fast processing. To reach
-\SIrange{20}{30}{fps}, audio must therefore be captured continuously in the
-background, and the processing must fit into $T_P \leq
-\SIrange{33}{50}{\milli\second}$ per frame. For the SRP map this means
-$G \cdot M(M-1)/2 = 1681 \cdot 120 \approx 2\cdot10^{5}$ pair contributions per
-block, which is only feasible with vectorised \code{NumPy} code.
+\SI{9.4}{fps} even with infinitely fast processing. Capturing audio
+continuously in the background removes this waiting time from the frame loop,
+so that only the processing time $T_P$ remains. The exact, measurable criteria
+will be agreed with the supervisor (Table~\ref{tab:objectives}).
 
-\begin{table}[h]
+\begin{table}[H]
   \centering
-  \caption{Quantifiable success criteria (target values to be agreed with the supervisor).}
+  \caption{Goals and success criteria (draft -- criteria and target values to be agreed with the supervisor).}
   \label{tab:objectives}
   \small
   \begin{tabularx}{\textwidth}{@{}lXcc@{}}
     \toprule
-    \textbf{No.} & \textbf{Criterion} & \textbf{Expected} & \textbf{Successful} \\
+    \textbf{No.} & \textbf{Goal / criterion} & \textbf{Expected} & \textbf{Successful} \\
     \midrule
-    O1 & Frame rate of the live heatmap overlay on the lab PC & $\geq \SI{5}{fps}$ & \SIrange{20}{30}{fps} \\
-    O2 & End-to-end latency (sound event $\rightarrow$ displayed heatmap) & $\leq \SI{250}{\milli\second}$ & $\leq \SI{100}{\milli\second}$ \\
-    O3 & Continuous streaming of all 16 channels without dropped blocks & $\geq \SI{10}{\minute}$ & $\geq \SI{60}{\minute}$ \\
-    O4 & Agreement of the optimised SRP map with the original \code{SRP.py} (max.\ relative deviation) & $\leq 10^{-3}$ & $\leq 10^{-6}$ \\
-    O5 & Lines of code of \code{main.py} (without comments) & $\leq 300$ & $\leq 200$ \\
-    O6 & Additional run-time dependencies introduced by \code{main.py} & $\leq 1$ & $0$ \\
-    O7 & Style warnings (PEP\,8~\cite{pep8}, linter) and functions without docstring & -- & $0$ \\
+    G1 & Frame rate of the live heatmap overlay in \code{main.py} & $\geq \SI{5}{fps}$ & \SIrange{20}{30}{fps} \\
+    G2 & Simple, clear and understandable code & \ph{tbd} & \ph{tbd} \\
+       & \ph{Further criteria (e.g.\ latency, stability, code metrics)} & \ph{tbd} & \ph{tbd} \\
     \bottomrule
   \end{tabularx}
 \end{table}
@@ -222,52 +217,37 @@ from a focus point $\mathbf{x}_g$ and summed,
   \tau_m(\mathbf{x}_g) = \frac{\lVert \mathbf{x}_g - \mathbf{r}_m \rVert}{c},
   \label{eq:das}
 \end{equation}
-where $c \approx \SI{343}{\metre\per\second}$ is the speed of sound. The lab
-module \code{SRP.py} implements the steered response power
-method~\cite{dibiase2001}, which is regarded as robust in reverberant rooms.
-It computes the generalised cross-correlation $R_{mn}$~\cite{knapp1976} of every
-microphone pair (optionally with PHAT weighting) and sums it at the expected
-time difference of arrival for each grid point:
-\begin{equation}
-  P(\mathbf{x}_g) = \sum_{m=1}^{M-1}\sum_{n=m+1}^{M}
-     R_{mn}\!\left(\tau_n(\mathbf{x}_g) - \tau_m(\mathbf{x}_g)\right).
-  \label{eq:srp}
-\end{equation}
-Because the delays in Eq.~\eqref{eq:srp} depend only on the geometry, they can
-be computed once in advance (\code{Geometry.py}); the run-time effort is then
-dominated by the FFTs and by evaluating the double sum for every grid point.
-For the UMA-16 ($4\times4$ grid, \SI{42}{\milli\metre} spacing) spatial
+where $c \approx \SI{343}{\metre\per\second}$ is the speed of sound. A related
+method is the steered response power (SRP)~\cite{dibiase2001}, which is
+regarded as robust in reverberant rooms and builds on the generalised
+cross-correlation between microphone pairs~\cite{knapp1976}. The lab module
+\code{SRP.py}, which is used as provided in this thesis, is based on this
+method. For the UMA-16 ($4\times4$ grid, \SI{42}{\milli\metre} spacing) spatial
 aliasing starts at about $c/(2d) \approx \SI{4.1}{\kilo\hertz}$, which is why
 the lab modules band-limit the signals to
 \SIrange{0.1}{8}{\kilo\hertz}\ph{ (to be reviewed)}.
 
-\textbf{Software.} Table~\ref{tab:software} compares existing tools.
-Acoular~\cite{sarradj2017} and pyroomacoustics~\cite{scheibler2018} provide
-extensive Python array-processing functionality, but are comparatively heavy
-and centred on analysis or simulation. ODAS~\cite{grondin2022} is a real-time
-localisation framework written in C. \code{python-sounddevice}~\cite{sounddevice},
-a binding to PortAudio~\cite{portaudio}, offers low-level multichannel audio
-I/O but knows nothing about array geometry. The two existing acoustic-camera
-scripts show the trade-off between these extremes. A thin, readable interface
-built on \code{sounddevice}, \code{NumPy} and OpenCV~\cite{bradski2000} is
-therefore missing. \ph{Check Google Scholar and IEEE Xplore for further
+\textbf{Existing approaches.} Table~\ref{tab:software} summarises the two
+existing acoustic-camera scripts, both based on Acoular~\cite{sarradj2017}.
+They show the trade-off between a robust but slow batch approach and a fast
+streaming approach that hides most of its processing inside a large framework.
+\code{main.py} is meant to combine the advantages of both: continuous audio
+capture with \code{python-sounddevice}~\cite{sounddevice}, a binding to
+PortAudio~\cite{portaudio}, together with the lab's own small and transparent
+modules. \ph{Check Google Scholar and IEEE Xplore for further
 low-cost acoustic-camera implementations.}
 
-\begin{table}[h]
+\begin{table}[H]
   \centering
-  \caption{Qualitative comparison of existing software and approaches.}
+  \caption{Existing approaches in the lab.}
   \label{tab:software}
   \small
-  \begin{tabularx}{\textwidth}{@{}>{\raggedright}p{3.4cm}l>{\raggedright}X>{\raggedright\arraybackslash}X@{}}
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright}p{3.6cm}>{\raggedright}X>{\raggedright}p{2.6cm}>{\raggedright\arraybackslash}X@{}}
     \toprule
-    \textbf{Tool / approach} & \textbf{Language} & \textbf{Main focus} & \textbf{Limitation for this thesis} \\
+    \textbf{Approach} & \textbf{Processing} & \textbf{Frame rate / latency} & \textbf{Limitation} \\
     \midrule
-    Acoular~\cite{sarradj2017} & Python & Beamforming, acoustic imaging & Large feature set, many dependencies \\
-    pyroomacoustics~\cite{scheibler2018} & Python & Room simulation, array algorithms & No device acquisition layer \\
-    ODAS~\cite{grondin2022} & C & Embedded real-time localisation & Not a native Python API \\
-    python-sounddevice~\cite{sounddevice} & Python & Generic audio I/O via PortAudio & No array geometry or processing \\
-    \code{batched\_acoustic\_\allowbreak camera.py} & Python & Acoustic camera, frequency domain & \SI{\approx 5}{fps}, pipeline re-created per frame \\
-    \code{live\_acoustic\_\allowbreak camera.py} & Python & Acoustic camera, time domain & Fully Acoular-based, hard to adapt \\
+    \code{batched\_acoustic\_\allowbreak camera.py} & Batch of 10 blocks per frame, frequency-domain beamforming (Acoular) & \SI{\approx 5}{fps}, \SI{\approx 213}{\milli\second} & Audio pipeline re-created for every frame \\
+    \code{live\_acoustic\_\allowbreak camera.py} & Continuous stream, time-domain beamforming on pre-filtered signals (Acoular) & \SI{\approx 20}{fps}, \SI{\approx 43}{\milli\second} & Fully based on Acoular objects, heavy and hard to adapt \\
     \bottomrule
   \end{tabularx}
 \end{table}
@@ -279,13 +259,13 @@ low-cost acoustic-camera implementations.}
 the lab modules (Figure~\ref{fig:architecture}). A \code{sounddevice} input
 stream runs continuously in the background; its callback only copies each
 block of shape (samples $\times$ 16 channels) into a queue. The main loop takes
-the newest block, applies the automatic gain control, computes the SRP map with
-the pre-computed geometry, converts it into a heatmap and blends it with the
+the newest block, applies the automatic gain control, computes the acoustic
+map with the lab module \code{SRP.py}, converts it into a heatmap and blends it with the
 current camera frame. Recording to a WAV file is optional. Apart from the
 libraries already required by the lab modules, no further dependencies are
 introduced.
 
-\begin{figure}[h]
+\begin{figure}[H]
   \centering
   \begin{tikzpicture}[
       font=\footnotesize,
@@ -334,22 +314,17 @@ The planned procedure is iterative, with a working program after every step:
   \item \textbf{Design:} a flat, easy-to-read structure -- configuration
         constants, small functions for device discovery, audio callback,
         processing and visualisation, and one main loop.
-  \item \textbf{Step 1 -- expected result (\SI{\geq 5}{fps}):} replacing the
+  \item \textbf{Continuous audio capturing (current focus):} replacing the
         per-frame audio recording with one continuous \code{sounddevice}
         stream, so that no time is lost waiting for audio
-        (Eq.~\eqref{eq:fps}).
-  \item \textbf{Step 2 -- successful result (\SIrange{20}{30}{fps}):}
-        vectorising the SRP computation -- FFTs of all channels in one call,
-        cross-correlations of all 120 pairs as one array, and a pre-computed
-        integer index table (pair $\times$ grid point) so that
-        Eq.~\eqref{eq:srp} becomes a single \code{NumPy} indexing and sum
-        operation -- and tuning block size and grid resolution.
-  \item \textbf{Verification and validation:} unit tests with \code{pytest}
-        that compare the optimised SRP map with the original \code{SRP.py} on
-        recorded and simulated data (O4); a benchmark that logs the frame rate
-        and the time per stage (O1, O2); a long-term streaming test (O3);
-        hand-clap and loudspeaker tests at known positions; comparison with
-        the existing approaches (RQ3).
+        (Eq.~\eqref{eq:fps}); target: expected result of \SI{\geq 5}{fps}.
+  \item \textbf{Further frame-rate improvement:} profiling of the remaining
+        processing chain and further measures, to be defined together with
+        the supervisor; target: successful result of \SIrange{20}{30}{fps}.
+  \item \textbf{Verification and validation:} a benchmark that logs the frame
+        rate and the time per processing stage; a long-term streaming test;
+        hand-clap tests at known positions; comparison with the existing
+        approaches (RQ3); review of the code for readability (G2).
   \item \textbf{Documentation:} docstrings, README with installation and
         usage, and a short explanation of the processing chain.
 \end{enumerate}
@@ -364,7 +339,7 @@ The planned procedure is iterative, with a working program after every step:
       \item Microphone arrays and MEMS microphones (UMA-16, sampling, synchronisation)
       \item Sound source localisation (delay-and-sum, GCC, SRP)
       \item Real-time audio in Python (USB audio, PortAudio, callbacks, buffering)
-      \item Performance and code quality in Python (vectorisation, profiling, clean code)
+      \item Performance and code quality in Python (profiling, clean code)
     \end{enumerate}
   \item State of the Art and Existing Approaches
   \item Requirements Analysis
@@ -373,7 +348,7 @@ The planned procedure is iterative, with a working program after every step:
     \begin{enumerate}[label=\theenumi.\arabic*,leftmargin=2em]
       \item Continuous audio streaming
       \item Integration of the lab modules
-      \item Optimisation of the SRP computation
+      \item Frame-rate improvements
       \item Visualisation
     \end{enumerate}
   \item Verification and Validation
@@ -382,7 +357,7 @@ The planned procedure is iterative, with a working program after every step:
       \item Performance measurements (frame rate, latency, stability)
       \item Comparison with the existing approaches
     \end{enumerate}
-  \item Discussion (fulfilment of objectives O1--O7, limitations)
+  \item Discussion (fulfilment of goals G1 and G2, limitations)
   \item Summary and Outlook
 \end{enumerate}
 Appendix: source code, measurement data, installation guide.
@@ -390,40 +365,27 @@ Appendix: source code, measurement data, installation guide.
 % =============================================================================
 \section{Project Schedule}
 % =============================================================================
-Figure~\ref{fig:schedule} shows the planned schedule (\ph{adjust to your
-official start and submission dates}). Milestones are marked with diamonds;
-the last weeks are reserved as buffer before the submission deadline set by
-the examination board.
+Table~\ref{tab:schedule} shows the planned schedule. The last weeks are
+reserved as buffer before the submission deadline set by the examination
+board.
 
-\begin{figure}[h]
+\begin{table}[H]
   \centering
-  \begin{ganttchart}[
-      hgrid, vgrid={*{17}{dotted}},
-      x unit=0.42cm, y unit chart=0.5cm,
-      title height=1,
-      bar/.append style={fill=blue!25},
-      bar label font=\footnotesize,
-      milestone label font=\footnotesize\itshape,
-      milestone/.append style={fill=red!60, shape=diamond, inner sep=2pt},
-      title label font=\scriptsize,
-    ]{1}{17}
-    \gantttitle{Week}{17} \\
-    \gantttitlelist{1,...,17}{1} \\
-    \ganttbar{Literature review \& exposé}{1}{3} \\
-    \ganttbar{Analysis of approaches \& modules}{2}{4} \\
-    \ganttmilestone{M1: Baselines measured}{4} \\
-    \ganttbar{Design \& continuous streaming}{5}{7} \\
-    \ganttmilestone{M2: Expected result (5 fps)}{7} \\
-    \ganttbar{Optimisation of SRP}{8}{11} \\
-    \ganttmilestone{M3: Target result (20--30 fps)}{11} \\
-    \ganttbar{Tests, benchmarks \& comparison}{10}{14} \\
-    \ganttbar{Writing the thesis}{8}{16} \\
-    \ganttbar{Buffer \& final corrections}{16}{17} \\
-    \ganttmilestone{M4: Submission}{17}
-  \end{ganttchart}
-  \caption{Project schedule with milestones M1--M4.}
-  \label{fig:schedule}
-\end{figure}
+  \caption{Project schedule.}
+  \label{tab:schedule}
+  \begin{tabularx}{\textwidth}{@{}>{\raggedright}X>{\raggedright}p{3.6cm}>{\raggedright\arraybackslash}X@{}}
+    \toprule
+    \textbf{Phase} & \textbf{Period} & \textbf{Milestone} \\
+    \midrule[\heavyrulewidth]
+    \rule{0pt}{1.6em} & & \\ \midrule
+    \rule{0pt}{1.6em} & & \\ \midrule
+    \rule{0pt}{1.6em} & & \\ \midrule
+    \rule{0pt}{1.6em} & & \\ \midrule
+    \rule{0pt}{1.6em} & & \\ \midrule
+    \rule{0pt}{1.6em} & & \\
+    \bottomrule
+  \end{tabularx}
+\end{table}
 
 \printbibliography
 
